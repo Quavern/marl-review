@@ -1,0 +1,193 @@
+# SPDX-License-Identifier: LicenseRef-QOSL-1.0
+# Copyright (c) 2026 Quavern
+# This file is subject to the Quavern Open Source License, version 1.0.
+# A copy is available at https://oss.quavern.com/licences/qosl/1.0/
+
+name: "Marl Review"
+description: "Pull-request review by Marl Code: concrete defects only, in one comment that is updated on every push."
+author: "Quavern"
+
+branding:
+  icon: "git-pull-request"
+  color: "gray-dark"
+
+inputs:
+  token:
+    description: "A Marl API token (qv_…), from a repository secret. An organisation service token (qv_s_…) is recommended. When empty, as on pull requests from forks, the review is skipped."
+    required: true
+  version:
+    description: "Marl Code release to install, e.g. 1.4.2, or latest."
+    required: false
+    default: "latest"
+  base:
+    description: "Commit to diff against. Defaults to the pull request's base commit."
+    required: false
+    default: ""
+  max-diff-bytes:
+    description: "Largest diff sent for review, in bytes. A larger diff is cut and the comment says so."
+    required: false
+    default: "200000"
+  language:
+    description: "Language of the comment and of the findings: en or fr."
+    required: false
+    default: "en"
+  fail-on:
+    description: "none, or high to fail the job when a high-severity defect is found."
+    required: false
+    default: "none"
+  github-token:
+    description: "Token used to write the comment. Needs pull-requests: write."
+    required: false
+    default: ${{ github.token }}
+  comment-author:
+    description: "Login that writes the comment; only its own earlier comment is updated. Change it when github-token is not the workflow token."
+    required: false
+    default: "github-actions[bot]"
+
+outputs:
+  findings:
+    description: "The findings as JSON: [{file, line, severity, problem, fix}]."
+    value: ${{ steps.review.outputs.findings }}
+  report:
+    description: "The full review as JSON: status, findings, summary, raw, error, usage, requests."
+    value: ${{ steps.review.outputs.report }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check inputs
+      id: check
+      shell: bash
+      env:
+        MARL_TOKEN_PRESENT: ${{ inputs.token != '' }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        LANGUAGE: ${{ inputs.language }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -euo pipefail
+        case "$LANGUAGE" in en|fr) ;; *) echo "::error::language must be en or fr"; exit 2 ;; esac
+        case "$FAIL_ON" in none|high) ;; *) echo "::error::fail-on must be none or high"; exit 2 ;; esac
+        if [ "$MARL_TOKEN_PRESENT" != "true" ]; then
+          echo "::notice title=Marl Review skipped::No Marl token is available to this run (pull requests from forks do not receive secrets)."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+        elif [ -z "$PR_NUMBER" ]; then
+          echo "::notice title=Marl Review skipped::This run is not attached to a pull request (event: ${EVENT_NAME})."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "run=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install Marl Code
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      env:
+        MARL_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$(uname -s)/$(uname -m)" in
+          Linux/x86_64)              target="linux/amd64" ;;
+          Linux/aarch64|Linux/arm64) target="linux/arm64" ;;
+          Darwin/x86_64)             target="darwin/amd64" ;;
+          Darwin/arm64)              target="darwin/arm64" ;;
+          *) echo "unsupported runner platform: $(uname -s)/$(uname -m)" >&2; exit 1 ;;
+        esac
+        if [ "$MARL_VERSION" = "latest" ]; then
+          manifest_url="https://updchk.quavern.net/marlcode/stable/latest.json"
+        else
+          manifest_url="https://dl.quavern.net/MarlCode/${MARL_VERSION}/latest.json"
+        fi
+        manifest="$(curl -fsSL "$manifest_url")"
+        url="$(printf '%s' "$manifest" | jq -r --arg t "$target" '.artifacts[$t].url // empty')"
+        sha="$(printf '%s' "$manifest" | jq -r --arg t "$target" '.artifacts[$t].sha256 // empty')"
+        if [ -z "$url" ] || [ -z "$sha" ]; then
+          echo "no artifact for $target in $manifest_url" >&2; exit 1
+        fi
+        case "$url" in
+          https://dl.quavern.net/*) ;;
+          *) echo "refusing artifact outside dl.quavern.net: $url" >&2; exit 1 ;;
+        esac
+        workdir="${RUNNER_TEMP}/marl-code"
+        mkdir -p "$workdir"
+        curl -fsSL "$url" -o "$workdir/marl.tar.gz"
+        echo "$sha  $workdir/marl.tar.gz" | shasum -a 256 -c -
+        tar -xzf "$workdir/marl.tar.gz" -C "$workdir"
+        binary="$(find "$workdir" -maxdepth 2 -type f -name marl | head -1)"
+        if [ -z "$binary" ]; then echo "marl binary not found in archive" >&2; exit 1; fi
+        chmod +x "$binary"
+        install_dir="${RUNNER_TEMP}/marl-bin"
+        mkdir -p "$install_dir"
+        mv "$binary" "$install_dir/marl"
+        echo "$install_dir" >> "$GITHUB_PATH"
+        "$install_dir/marl" version < /dev/null
+
+    - name: Collect the diff
+      id: diff
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      env:
+        BASE_SHA: ${{ inputs.base || github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MAX_BYTES: ${{ inputs.max-diff-bytes }}
+        OUT_DIR: ${{ runner.temp }}/marl-review
+      run: bash "$GITHUB_ACTION_PATH/scripts/diff.sh" >> "$GITHUB_OUTPUT"
+
+    - name: Review
+      id: review
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      env:
+        MARL_API_KEY: ${{ inputs.token }}
+        LANGUAGE: ${{ inputs.language }}
+        OUT_DIR: ${{ runner.temp }}/marl-review
+        ACTION_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        bash "$ACTION_DIR/scripts/review.sh"
+        {
+          echo "report<<MARL_REVIEW_EOF"
+          cat "$OUT_DIR/review.json"
+          echo "MARL_REVIEW_EOF"
+          echo "findings<<MARL_REVIEW_EOF"
+          jq -c '.findings' "$OUT_DIR/review.json"
+          echo "MARL_REVIEW_EOF"
+          echo "status=$(jq -r '.status' "$OUT_DIR/review.json")"
+          echo "high=$(jq '[.findings[] | select(.severity == "high")] | length' "$OUT_DIR/review.json")"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Comment on the pull request
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        LANGUAGE: ${{ inputs.language }}
+        DIFF_BYTES: ${{ steps.diff.outputs.diff_bytes }}
+        REVIEWED_BYTES: ${{ steps.diff.outputs.reviewed_bytes }}
+        COMMENT_AUTHOR: ${{ inputs.comment-author }}
+        OUT_DIR: ${{ runner.temp }}/marl-review
+        ACTION_DIR: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python3 "$ACTION_DIR/scripts/render-comment.py" "$OUT_DIR/review.json" \
+          --sha "$HEAD_SHA" --language "$LANGUAGE" \
+          --diff-bytes "${DIFF_BYTES:-0}" --reviewed-bytes "${REVIEWED_BYTES:-0}" > "$OUT_DIR/comment.md"
+        BODY_FILE="$OUT_DIR/comment.md" bash "$ACTION_DIR/scripts/upsert-comment.sh"
+
+    - name: Result
+      if: steps.check.outputs.run == 'true'
+      shell: bash
+      env:
+        STATUS: ${{ steps.review.outputs.status }}
+        HIGH: ${{ steps.review.outputs.high }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -euo pipefail
+        if [ "$STATUS" = "error" ]; then
+          echo "::warning title=Marl Review::The review could not run; the comment has the error code."
+        fi
+        if [ "$FAIL_ON" = "high" ] && [ "${HIGH:-0}" -gt 0 ]; then
+          echo "::error title=Marl Review::${HIGH} high-severity defect(s) found."
+          exit 1
+        fi

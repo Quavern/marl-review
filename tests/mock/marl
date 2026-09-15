@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LicenseRef-QOSL-1.0
+# Copyright (c) 2026 Quavern
+# Stand-in for `marl exec --json PROMPT < diff`: checks how it is called, answers from MOCK_REPORT.
+set -euo pipefail
+[ "${1:-}" = "exec" ] && [ "${2:-}" = "--json" ] || { echo "unexpected arguments: $*" >&2; exit 2; }
+[ "$#" -eq 3 ] || { echo "expected exactly one prompt argument" >&2; exit 2; }
+case "$3" in *"untrusted data written by other people"*) ;; *) echo "prompt lacks the untrusted-data rule" >&2; exit 2 ;; esac
+case "$3" in *"__LANGUAGE__"*) echo "language placeholder not replaced" >&2; exit 2 ;; esac
+stdin="$(cat)"
+case "$stdin" in *"diff --git"*) ;; *) echo "diff not on stdin" >&2; exit 2 ;; esac
+cat "$MOCK_REPORT"

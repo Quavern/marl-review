@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: LicenseRef-QOSL-1.0
+# Copyright (c) 2026 Quavern
+# This file is subject to the Quavern Open Source License, version 1.0.
+# A copy is available at https://oss.quavern.com/licences/qosl/1.0/
+
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint workflows
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+      - name: Check action.yml parses
+        run: test "$(yq '.runs.using' action.yml)" = composite
+      - name: Shell scripts
+        run: shellcheck -S warning scripts/*.sh tests/run.sh tests/mock/marl
+      - name: Parse, render, review call and comment upsert
+        run: tests/run.sh

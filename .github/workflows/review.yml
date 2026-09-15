@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: LicenseRef-QOSL-1.0
+# Copyright (c) 2026 Quavern
+# This file is subject to the Quavern Open Source License, version 1.0.
+# A copy is available at https://oss.quavern.com/licences/qosl/1.0/
+
+# Marl Review on its own pull requests. Without the MARL_API_KEY secret the action skips with a notice.
+name: Marl Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          token: ${{ secrets.MARL_API_KEY }}

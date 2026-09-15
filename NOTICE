@@ -1,0 +1,9 @@
+Marl Review
+Copyright (c) 2026 Quavern
+
+Files without their own header (action.yml's companions such as README.md,
+prompts/review.txt and tests/fixtures/) are Covered Files under the Quavern Open
+Source License, version 1.0 (LicenseRef-QOSL-1.0), https://oss.quavern.com/licences/qosl/1.0/.
+
+Marl Code, which this action downloads and runs, is not part of this repository and
+is not covered by that licence.
